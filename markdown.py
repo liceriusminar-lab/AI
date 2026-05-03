@@ -15,7 +15,7 @@ def convert(text: str) -> str:
         return (
             f'<div style="background:#1a1f2e;border:1px solid #2a2b3d;'
             f'border-radius:6px;padding:12px;margin:8px 0;'
-            f'font-family:monospace;font-size:13px;color:#abb2bf;white-space:pre;">'
+            f'font-family:monospace;font-size:13px;color:#abb2bf;white-space:pre-wrap;">'
             f'<span style="color:{COLORS["text_dim"]};font-size:11px;">{lang}</span><br>'
             f'{code}</div>'
         )

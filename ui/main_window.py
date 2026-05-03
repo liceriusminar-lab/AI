@@ -1,7 +1,7 @@
 import os
 import base64
-import mimetypes
 import requests
+import re
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -11,20 +11,19 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon, QTextCursor
 
-from config import COLORS, STYLESHEET, ICON_PATH
+from config import COLORS, ICON_PATH
 from personality import SYSTEM_PROMPT, ASSISTANT_NAME, APP_TITLE, APP_SUBTITLE
 from chat_manager import ChatManager
 from ollama_worker import OllamaWorker
 from filesystem import parse_ai_actions
-from ui.settings_window import SettingsWindow, load_settings
+from ui.settings_window import SettingsWindow, load_settings, build_stylesheet
 import markdown
-import re
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Sylfiette AI")
+        self.setWindowTitle("Sylviette AI")
         self.resize(1150, 740)
         self.setMinimumSize(800, 500)
         if os.path.exists(ICON_PATH):
@@ -34,7 +33,6 @@ class MainWindow(QMainWindow):
         self.worker          = None
         self.stream_buffer   = ""
         self.pending_files   = []
-        from ui.settings_window import load_settings, build_stylesheet
         self._current_settings = load_settings()
         self._build_ui()
         self.setStyleSheet(build_stylesheet(self._current_settings))
@@ -44,7 +42,6 @@ class MainWindow(QMainWindow):
         self._load_models()
 
     def _build_ui(self):
-        self.setStyleSheet(STYLESHEET)
         central = QWidget()
         root    = QHBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
@@ -58,41 +55,26 @@ class MainWindow(QMainWindow):
         root.addWidget(splitter)
 
     def _build_sidebar(self):
-        sidebar = QWidget(); sidebar.setObjectName("sidebar")
+        sidebar = QWidget()
+        sidebar.setObjectName("sidebar")
         layout  = QVBoxLayout(sidebar)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        # Кнопка скрытия панели
-        toggle_btn = QPushButton("◀")
-        toggle_btn.setObjectName("delete_btn")
-        toggle_btn.setFixedWidth(24)
-        toggle_btn.setToolTip("Скрыть панель")
-        toggle_btn.clicked.connect(self._toggle_sidebar)
-
-        # Кнопка скрытия панели
-        toggle_btn = QPushButton("◀")
-        toggle_btn.setObjectName("delete_btn")
-        toggle_btn.setFixedWidth(24)
-        toggle_btn.setToolTip("Скрыть панель")
-        toggle_btn.clicked.connect(self._toggle_sidebar)
-
         title    = QLabel(APP_TITLE);    title.setObjectName("app_title")
         subtitle = QLabel(APP_SUBTITLE); subtitle.setObjectName("app_subtitle")
-        new_btn  = QPushButton("＋  Новый чат"); new_btn.setObjectName("new_chat_btn")
+        new_btn  = QPushButton("+ Новый чат"); new_btn.setObjectName("new_chat_btn")
         new_btn.clicked.connect(self._new_chat)
         self.chat_list = QListWidget(); self.chat_list.setObjectName("chat_list")
         self.chat_list.itemClicked.connect(self._on_chat_selected)
-        self.chat_list.currentItemChanged.connect(lambda cur, prev: self._load_chat(cur.data(Qt.ItemDataRole.UserRole)) if cur else None)
-        model_lbl = QLabel("Модель:")
-        model_lbl.setStyleSheet(f"color:{COLORS['text_dim']};font-size:11px;padding:8px 16px 2px 16px;")
+        self.chat_list.currentItemChanged.connect(
+            lambda cur, prev: self._load_chat(cur.data(Qt.ItemDataRole.UserRole)) if cur else None
+        )
         self.model_selector = QComboBox(); self.model_selector.setObjectName("model_selector")
-        del_btn = QPushButton("🗑  Удалить чат"); del_btn.setObjectName("delete_btn")
+        del_btn = QPushButton("Удалить чат"); del_btn.setObjectName("delete_btn")
         del_btn.clicked.connect(self._delete_current_chat)
-
-        settings_btn = QPushButton("⚙  Настройки")
-        settings_btn.setObjectName("delete_btn")
+        settings_btn = QPushButton("Настройки"); settings_btn.setObjectName("delete_btn")
         settings_btn.clicked.connect(self._open_settings)
-        for w in [title, subtitle, new_btn, self.chat_list, model_lbl, self.model_selector, del_btn, settings_btn]:
+        for w in [title, subtitle, new_btn, self.chat_list, self.model_selector, del_btn, settings_btn]:
             layout.addWidget(w)
         layout.addSpacing(12)
         return sidebar
@@ -120,7 +102,7 @@ class MainWindow(QMainWindow):
         self.attach_label.hide()
         row = QHBoxLayout(); row.setSpacing(10)
         attach_btn = QPushButton("📎"); attach_btn.setObjectName("attach_btn")
-        attach_btn.setToolTip("Прикрепить текстовый файл")
+        attach_btn.setToolTip("Прикрепить файл или картинку")
         attach_btn.clicked.connect(self._attach_file)
         self.input_box = QTextEdit(); self.input_box.setObjectName("input_box")
         self.input_box.setPlaceholderText("Напишите сообщение… (Enter — отправить, Shift+Enter — новая строка)")
@@ -135,22 +117,6 @@ class MainWindow(QMainWindow):
         layout.addLayout(row)
         return panel
 
-    def _toggle_sidebar(self):
-        if self._sidebar.isVisible():
-            self._sidebar.hide()
-            self._toggle_btn_main.show()
-        else:
-            self._sidebar.show()
-            self._toggle_btn_main.hide()
-
-    def _toggle_sidebar(self):
-        if self._sidebar.isVisible():
-            self._sidebar.hide()
-            self._toggle_btn_main.show()
-        else:
-            self._sidebar.show()
-            self._toggle_btn_main.hide()
-
     def eventFilter(self, obj, event):
         from PyQt6.QtCore import QEvent
         if obj == self.input_box and event.type() == QEvent.Type.KeyPress:
@@ -159,19 +125,20 @@ class MainWindow(QMainWindow):
         return super().eventFilter(obj, event)
 
     def _load_models(self):
+        self.model_selector.clear()
         try:
             resp = requests.get("http://localhost:11434/api/tags", timeout=3)
             if resp.status_code == 200:
                 models = [m["name"] for m in resp.json().get("models", [])]
-                self.model_selector.clear()
                 if models:
                     self.model_selector.addItems(models)
-                    self.status_label.setText(f"✓ Ollama подключена · {len(models)} модел(ей)")
+                    self.status_label.setText("Сильфиетта подключена!")
                 else:
-                    self.model_selector.addItem("Нет моделей")
+                    self.model_selector.addItem("sylviette-125m")
+                    self.status_label.setText("Сильфиетта готова!")
         except Exception:
-            self.model_selector.addItem("Ollama не запущена")
-            self.status_label.setText("✗ Запустите: ollama serve")
+            self.model_selector.addItem("Сервер не запущен")
+            self.status_label.setText("Запустите: python -m sylviette_ai.inference --checkpoint checkpoints/sylviette-chat/latest.pt")
 
     def _new_chat(self):
         cid = self.chat_mgr.new_chat()
@@ -210,18 +177,18 @@ class MainWindow(QMainWindow):
 
     def _render_message(self, role, content):
         if isinstance(content, list):
-            text = next((p["text"] for p in content if p.get("type") == "text"), "")
-            has_img = any(p.get('type') == 'image_url' for p in content)
-            display = ("📷 [изображение]\n" if has_img else "") + text
+            text    = next((p["text"] for p in content if p.get("type") == "text"), "")
+            has_img = any(p.get("type") == "image_url" for p in content)
+            display = ("📷 [картинка]\n" if has_img else "") + text
         else:
             display = content
         self._append_bubble(role, display)
 
     def _append_bubble(self, role, text, raw=False):
         if role == "user":
-            color, name, bg = COLORS['accent2'], "Вы", COLORS['user_msg']
+            color, name, bg = COLORS["accent2"], "Создатель", COLORS["user_msg"]
         else:
-            color, name, bg = COLORS['accent'], ASSISTANT_NAME, COLORS['ai_msg']
+            color, name, bg = COLORS["accent"], ASSISTANT_NAME, COLORS["ai_msg"]
         body = text if raw else markdown.convert(text)
         html = (
             f'<div style="margin:4px 0;padding:8px 12px;background-color:{bg};'
@@ -266,9 +233,16 @@ class MainWindow(QMainWindow):
             "Изображения (*.png *.jpg *.jpeg *.webp);;Текст (*.txt *.py *.js *.md *.json *.csv);;Все файлы (*)")
         if not path: return
         fname = os.path.basename(path)
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            file_text = f.read()
-        content = {"type": "text", "text": f"[Файл: {fname}]\n```\n{file_text}\n```"}
+        ext   = os.path.splitext(path)[1].lower()
+        if ext in [".png", ".jpg", ".jpeg", ".webp"]:
+            with open(path, "rb") as f:
+                data = base64.b64encode(f.read()).decode()
+            mime    = "image/png" if ext == ".png" else "image/jpeg"
+            content = {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}
+        else:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                file_text = f.read()
+            content = {"type": "text", "text": f"[Файл: {fname}]\n```\n{file_text}\n```"}
         self.pending_files.append((fname, content))
         names = ", ".join(n for n, _ in self.pending_files)
         self.attach_label.setText(f"📎 {names}"); self.attach_label.show()
@@ -278,10 +252,10 @@ class MainWindow(QMainWindow):
         if (not text and not self.pending_files) or not self.current_chat_id: return
         if self.worker and self.worker.isRunning(): return
         model = self.model_selector.currentText()
-        if any(x in model for x in ["не запущена", "Нет"]): return
+        if "не запущен" in model: return
         self.input_box.clear()
         if self.pending_files:
-            parts        = [{"type": "text", "text": text or "Проанализируй файл"}]
+            parts        = [{"type": "text", "text": text or "Проанализируй"}]
             parts       += [c for _, c in self.pending_files]
             user_content = parts
             display      = "📎 " + ", ".join(n for n, _ in self.pending_files) + ("\n" + text if text else "")
@@ -295,7 +269,7 @@ class MainWindow(QMainWindow):
         history  = self.chat_mgr.get_messages(self.current_chat_id)
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
         self.send_btn.setEnabled(False)
-        self.status_label.setText(f"✦ {ASSISTANT_NAME} думает…")
+        self.status_label.setText(f"Сильфиетта думает…")
         self.stream_buffer = ""
         self.worker = OllamaWorker(model, messages)
         self.worker.token_received.connect(self._on_token)
@@ -317,16 +291,13 @@ class MainWindow(QMainWindow):
         for action_type, target, result in actions:
             self._append_action_result(action_type, target, result)
         self.send_btn.setEnabled(True)
-        self.status_label.setText("✓ Готово")
+        self.status_label.setText("Готово")
         self._refresh_chat_list()
 
     def _on_error(self, err):
-        self._append_bubble("assistant", f"⚠ Ошибка: {err}")
+        self._append_bubble("assistant", f"Ошибка: {err}")
         self.send_btn.setEnabled(True)
-        self.status_label.setText(f"✗ {err}")
-
-
-# Метод добавляется через monkey-patch при запуске
+        self.status_label.setText(f"Ошибка: {err}")
 
     def _open_settings(self):
         w = SettingsWindow(self)
@@ -334,5 +305,4 @@ class MainWindow(QMainWindow):
         w.exec()
 
     def _apply_settings(self, s):
-        from ui.settings_window import build_stylesheet
         self.setStyleSheet(build_stylesheet(s))

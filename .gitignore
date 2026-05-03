@@ -3,3 +3,11 @@ __pycache__/
 .env
 ~/.ai-assistant/
 *.png
+checkpoints/
+data/
+*.log
+venv/
+__pycache__/
+*.pyc
+*.pt
+*.bin
