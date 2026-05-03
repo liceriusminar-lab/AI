@@ -51,6 +51,9 @@ def main():
     start_backend()
     win = MainWindow()
     win.show()
+    # Перезагружаем модели через 10 секунд
+    from PyQt6.QtCore import QTimer
+    QTimer.singleShot(10000, win._load_models)
     sys.exit(app.exec())
 
 
