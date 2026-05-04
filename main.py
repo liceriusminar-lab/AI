@@ -9,29 +9,39 @@ import os
 
 def start_backend():
     """Запускает Ollama и inference сервер в фоне."""
-    import subprocess, time, os
-    
-    # Запускаем Ollama с Qwen
-    env = os.environ.copy()
-    env["OLLAMA_HOST"] = "127.0.0.1:11435"
-    subprocess.Popen(["ollama", "serve"], env=env,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(3)
-    
-    # Запускаем inference сервер
-    venv_python = os.path.join(os.path.dirname(sys.executable), "python")
-    checkpoint = os.path.expanduser("~/.local/share/sylviette/pretrain/latest.pt")
-    if not os.path.exists(checkpoint):
-        checkpoint = os.path.join(os.path.dirname(__file__), 
-                                  "checkpoints/sylviette-pretrain/latest.pt")
-    env2 = os.environ.copy()
-    env2["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    subprocess.Popen(
-        [sys.executable, "-m", "sylviette_ai.inference",
-         "--checkpoint", checkpoint, "--no-vision"],
-        env=env2, cwd=os.path.dirname(__file__),
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
+    import subprocess, time, os, requests
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Проверяем не запущена ли уже Ollama на 11435
+    try:
+        requests.get("http://localhost:11435/api/tags", timeout=2)
+        print("Ollama уже запущена")
+    except Exception:
+        # Запускаем Ollama с Qwen на порту 11435
+        env = os.environ.copy()
+        env["OLLAMA_HOST"] = "127.0.0.1:11435"
+        subprocess.Popen(["ollama", "serve"], env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print("Ollama запускается...")
+        time.sleep(5)
+
+    # Проверяем не запущен ли уже inference сервер
+    try:
+        requests.get("http://localhost:11434/api/tags", timeout=2)
+        print("Inference сервер уже запущен")
+    except Exception:
+        # Запускаем inference сервер
+        checkpoint = os.path.join(base_dir, "checkpoints/sylviette-pretrain/latest.pt")
+        env2 = os.environ.copy()
+        env2["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+        subprocess.Popen(
+            [sys.executable, "-m", "sylviette_ai.inference",
+             "--checkpoint", checkpoint, "--no-vision"],
+            env=env2, cwd=base_dir,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        print("Inference сервер запускается...")
 
 def main():
     app = QApplication(sys.argv)
