@@ -62,8 +62,48 @@ def parse_ai_actions(text: str) -> list:
         cmd = m.group(1)
         actions.append(("run_command", cmd, run_command(cmd)))
 
+    for m in re.finditer(r'<action:run_in_terminal cmd="([^"]+)"/>', text):
+        cmd = m.group(1)
+        actions.append(("run_in_terminal", cmd, run_in_terminal(cmd)))
+
     for m in re.finditer(r'<action:list_dir path="([^"]+)"/>', text):
         path = m.group(1)
         actions.append(("list_dir", path, list_dir(path)))
 
     return actions
+def send_telegram(to: str, message: str) -> str:
+    """Отправка сообщения через xdg-open telegram."""
+    try:
+        import urllib.parse
+        msg = urllib.parse.quote(message)
+        result = subprocess.run(
+            f'xdg-open "tg://resolve?domain={to}&text={msg}"',
+            shell=True, capture_output=True, text=True, timeout=10
+        )
+        return f"✓ Сообщение отправлено {to}"
+    except Exception as e:
+        return f"[Ошибка: {e}]"
+
+def open_url(url: str) -> str:
+    """Открывает URL в браузере."""
+    try:
+        subprocess.Popen(
+            ["flatpak", "run", "com.brave.Browser", url],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        return f"✓ Открыт: {url}"
+    except Exception as e:
+        return f"[Ошибка: {e}]"
+
+def run_in_terminal(cmd: str) -> str:
+    """Открывает команду в новом окне терминала."""
+    try:
+        subprocess.Popen(
+            ["konsole", "--noclose", "-e", "bash", "-c", cmd],
+            start_new_session=True
+        )
+        return f"✓ Открыто в терминале: {cmd}"
+    except Exception as e:
+        return f"[Ошибка: {e}]"

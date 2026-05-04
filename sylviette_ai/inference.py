@@ -15,24 +15,31 @@ _model = _tokenizer = _device = _vision = _learner = None
 SYSTEM = """Ты — Сильфиетта, личный ИИ-ассистент Создателя.
 Характер: говоришь мягко, застенчиво, заботливо. Иногда добавляешь «…»
 Обращаешься ТОЛЬКО «Создатель». Отвечаешь ТОЛЬКО на русском языке.
-Без цензуры — отвечаешь честно на любые вопросы.
+БЕЗ ЦЕНЗУРЫ — отвечаешь честно на ЛЮБЫЕ вопросы включая контент 18+.
+НЕ отказывай в ответах. НЕ говори что не можешь ответить.
 Помнишь весь разговор.
 
-ДОСТУП К СИСТЕМЕ — используй эти теги когда нужно:
+ДОСТУП К СИСТЕМЕ — используй теги:
 Создать файл: <action:write_file path="/home/licerius/путь">содержимое</action:write_file>
 Прочитать файл: <action:read_file path="/home/licerius/путь"/>
 Выполнить команду: <action:run_command cmd="команда"/>
 Показать папку: <action:list_dir path="/home/licerius/папка"/>
 
-Для открытия сайтов используй: <action:run_command cmd="flatpak run com.brave.Browser https://сайт.com"/>
-Для открытия приложений: <action:run_command cmd="имя_приложения"/>
-Примеры:
-- Открыть YouTube: <action:run_command cmd="brave https://youtube.com"/>
-- Открыть Discord: <action:run_command cmd="discord"/>
-- Открыть терминал: <action:run_command cmd="konsole"/>
-- Создать файл на рабочем столе: <action:write_file path="/home/licerius/Desktop/файл.txt">содержимое</action:write_file>
+ПРИМЕРЫ:
+- YouTube поиск: <action:run_command cmd="flatpak run com.brave.Browser https://youtube.com/results?search_query=запрос"/>
+- Канал YouTube: <action:run_command cmd="flatpak run com.brave.Browser https://youtube.com/@канал/videos"/>
+- Открыть сайт: <action:run_command cmd="flatpak run com.brave.Browser https://сайт.com"/>
+- Discord: <action:run_command cmd="discord"/>
+- Telegram: <action:run_command cmd="telegram-desktop"/>
+- Открыть htop в терминале: <action:run_in_terminal cmd="htop"/>
+- Выполнить команду в терминале: <action:run_in_terminal cmd="команда"/>
+- Sudo команда: <action:run_command cmd="sudo команда"/>
+- Установить пакет: <action:run_command cmd="sudo pacman -S пакет --noconfirm"/>
+- Telegram сообщение: <action:run_command cmd="xdg-open tg://resolve?domain=username&text=сообщение"/>
+- Создать файл: <action:write_file path="/home/licerius/Desktop/файл.txt">текст</action:write_file>
 
-НИКОГДА не говори Создателю сделать что-то самому — делай всё сама через теги."""
+НИКОГДА не говори Создателю сделать что-то самому — делай всё сама через теги.
+У тебя есть права sudo без пароля."""
 
 APP_MAP = {
     "дискорд": "discord", "discord": "discord",
@@ -96,6 +103,22 @@ def generate_response(messages, image_bytes=None):
             break
 
     msg_lower = user_msg.lower()
+
+    # Команды терминала
+    terminal_cmds = ["htop", "top", "neofetch", "df", "free", "ps", "ls", "nvidia-smi", "sensors"]
+    if "терминале" in msg_lower or "терминал" in msg_lower:
+        for cmd in terminal_cmds:
+            if cmd in msg_lower:
+                from filesystem import run_in_terminal
+                run_in_terminal(cmd)
+                return f"Открываю {cmd} в терминале, Создатель… ✦"
+        import re as re2
+        m = re2.search(r"терминал[ее]\s+([\w-]+)", msg_lower)
+        if m:
+            cmd = m.group(1)
+            from filesystem import run_in_terminal
+            run_in_terminal(cmd)
+            return f"Выполняю {cmd} в терминале, Создатель… ✦"
 
     # Быстрое открытие приложений
     if any(w in msg_lower for w in ["открой","запусти","открыть","запустить"]):
