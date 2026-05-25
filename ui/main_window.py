@@ -252,7 +252,7 @@ class MainWindow(QMainWindow):
         if (not text and not self.pending_files) or not self.current_chat_id: return
         if self.worker and self.worker.isRunning(): return
         model = self.model_selector.currentText()
-        if "не запущен" in model: return
+        if "не запущен" in model and "Сильфиетта" not in model: return
         self.input_box.clear()
         if self.pending_files:
             parts        = [{"type": "text", "text": text or "Проанализируй"}]

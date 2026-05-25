@@ -190,7 +190,7 @@ class SylvietteHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args): pass
     def do_GET(self):
         if self.path == "/api/tags":
-            self._json({"models": [{"name": "sylviette-qwen"}]})
+            self._json({"models": [{"name": "Сильфиетта"}]})
         elif self.path == "/api/cache":
             self._json(cache_stats())
     def do_POST(self):
