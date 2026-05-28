@@ -17,6 +17,7 @@ from chat_manager import ChatManager
 from ollama_worker import OllamaWorker
 from filesystem import parse_ai_actions
 from ui.settings_window import SettingsWindow, load_settings, build_stylesheet
+from ui.file_panel import FilePanel
 import markdown
 
 
@@ -50,8 +51,16 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_sidebar())
         splitter.addWidget(self._build_chat_area())
-        splitter.setSizes([240, 910])
+
+        # Файловая панель
+        self.file_panel = FilePanel()
+        self.file_panel.send_to_chat.connect(self._file_to_chat)
+        self.file_panel.setVisible(False)
+        splitter.addWidget(self.file_panel)
+
+        splitter.setSizes([240, 910, 0])
         splitter.setHandleWidth(1)
+        self._splitter = splitter
         root.addWidget(splitter)
 
     def _build_sidebar(self):
@@ -74,7 +83,9 @@ class MainWindow(QMainWindow):
         del_btn.clicked.connect(self._delete_current_chat)
         settings_btn = QPushButton("Настройки"); settings_btn.setObjectName("delete_btn")
         settings_btn.clicked.connect(self._open_settings)
-        for w in [title, subtitle, new_btn, self.chat_list, self.model_selector, del_btn, settings_btn]:
+        files_btn = QPushButton("📁 Файлы"); files_btn.setObjectName("delete_btn")
+        files_btn.clicked.connect(self._toggle_files)
+        for w in [title, subtitle, new_btn, self.chat_list, self.model_selector, del_btn, settings_btn, files_btn]:
             layout.addWidget(w)
         layout.addSpacing(12)
         return sidebar
@@ -298,6 +309,24 @@ class MainWindow(QMainWindow):
         self._append_bubble("assistant", f"Ошибка: {err}")
         self.send_btn.setEnabled(True)
         self.status_label.setText(f"Ошибка: {err}")
+
+    def _toggle_files(self):
+        visible = self.file_panel.isVisible()
+        self.file_panel.setVisible(not visible)
+        if not visible:
+            self._splitter.setSizes([240, 700, 350])
+        else:
+            self._splitter.setSizes([240, 910, 0])
+
+    def _file_to_chat(self, fname: str, content: str):
+        """Отправляет файл из файловой панели в чат."""
+        if not self.current_chat_id:
+            return
+        file_content = {"type": "text", "text": f"[Файл: {fname}]\n```\n{content}\n```"}
+        self.pending_files.append((fname, file_content))
+        names = ", ".join(n for n, _ in self.pending_files)
+        self.attach_label.setText(f"📎 {names}")
+        self.attach_label.show()
 
     def _open_settings(self):
         w = SettingsWindow(self)

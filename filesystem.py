@@ -100,8 +100,10 @@ def open_url(url: str) -> str:
 def run_in_terminal(cmd: str) -> str:
     """Открывает команду в новом окне терминала."""
     try:
+        # Команды которые требуют sudo — запускаем в konsole
         subprocess.Popen(
-            ["konsole", "--noclose", "-e", "bash", "-c", cmd],
+            ["konsole", "--noclose", "-e", "bash", "-c",
+             f"{cmd}; echo '--- Готово. Нажмите Enter ---'; read"],
             start_new_session=True
         )
         return f"✓ Открыто в терминале: {cmd}"

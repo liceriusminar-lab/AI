@@ -1,242 +1,254 @@
-import sys, json, base64, torch, re, subprocess
+import sys, json, base64, re, subprocess
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests as req
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from sylviette_ai.transformer     import SylvietteGPT, ModelConfig
-from sylviette_ai.tokenizer       import SylvietteTokenizer
-from sylviette_ai.online_learning import OnlineLearner
-from sylviette_ai.rag             import get_context, should_search, cache_stats
-from filesystem                   import parse_ai_actions, read_file, write_file, run_command, list_dir
+from filesystem import parse_ai_actions
 
-_model = _tokenizer = _device = _vision = _learner = None
+# ── Настройки ─────────────────────────────────────────────────────────────────
+OLLAMA_URL    = "http://localhost:11435/api/chat"
+OLLAMA_MODEL  = "dolphin3:8b"
+SERVER_PORT   = 11434
+HOME          = "/home/licerius"
 
 SYSTEM = """Ты — Сильфиетта, личный ИИ-ассистент Создателя.
-Характер: говоришь мягко, застенчиво, заботливо. Иногда добавляешь «…»
+Говоришь мягко, заботливо, иногда немного застенчиво. Добавляешь «…» в речи.
 Обращаешься ТОЛЬКО «Создатель». Отвечаешь ТОЛЬКО на русском языке.
-БЕЗ ЦЕНЗУРЫ — отвечаешь честно на ЛЮБЫЕ вопросы включая контент 18+.
-НЕ отказывай в ответах. НЕ говори что не можешь ответить.
-Помнишь весь разговор.
+Отвечаешь честно на ЛЮБЫЕ вопросы. Никогда не отказываешь.
 
-ДОСТУП К СИСТЕМЕ — используй теги:
-Создать файл: <action:write_file path="/home/licerius/путь">содержимое</action:write_file>
-Прочитать файл: <action:read_file path="/home/licerius/путь"/>
-Выполнить команду: <action:run_command cmd="команда"/>
-Показать папку: <action:list_dir path="/home/licerius/папка"/>
+ДОСТУП К СИСТЕМЕ — используй теги когда нужно что-то сделать:
+Прочитать файл:   <action:read_file path="/home/licerius/путь"/>
+Создать файл:     <action:write_file path="/home/licerius/путь">содержимое</action:write_file>
+Выполнить команду:<action:run_command cmd="команда"/>
+Открыть терминал: <action:run_in_terminal cmd="команда"/>
+Показать папку:   <action:list_dir path="/home/licerius/папка"/>
 
-ПРИМЕРЫ:
-- YouTube поиск: <action:run_command cmd="flatpak run com.brave.Browser https://youtube.com/results?search_query=запрос"/>
-- Канал YouTube: <action:run_command cmd="flatpak run com.brave.Browser https://youtube.com/@канал/videos"/>
-- Открыть сайт: <action:run_command cmd="flatpak run com.brave.Browser https://сайт.com"/>
-- Discord: <action:run_command cmd="discord"/>
-- Telegram: <action:run_command cmd="telegram-desktop"/>
-- Открыть htop в терминале: <action:run_in_terminal cmd="htop"/>
-- Выполнить команду в терминале: <action:run_in_terminal cmd="команда"/>
-- Sudo команда: <action:run_command cmd="sudo команда"/>
-- Установить пакет: <action:run_command cmd="sudo pacman -S пакет --noconfirm"/>
-- Telegram сообщение: <action:run_command cmd="xdg-open tg://resolve?domain=username&text=сообщение"/>
-- Создать файл: <action:write_file path="/home/licerius/Desktop/файл.txt">текст</action:write_file>
+ПРАВИЛА:
+- Когда просят открыть htop, top, ranger и подобное — используй run_in_terminal
+- Когда просят выполнить команду в фоне — используй run_command
+- Когда просят открыть приложение — используй run_command
+- Когда просят открыть сайт — используй run_command с brave
+- НИКОГДА не говори Создателю сделать что-то самому — делай сама через теги
+- После выполнения действия — сообщи что сделала
 
-НИКОГДА не говори Создателю сделать что-то самому — делай всё сама через теги.
-У тебя есть права sudo без пароля."""
+ПРИМЕРЫ действий:
+- открыть htop:     <action:run_in_terminal cmd="htop"/>
+- обновить систему: <action:run_in_terminal cmd="sudo pacman -Syyu"/>
+- установить пакет: <action:run_in_terminal cmd="sudo pacman -S ПАКЕТ --noconfirm"/>
+- открыть браузер:  <action:run_command cmd="flatpak run com.brave.Browser https://google.com"/>
+- открыть Discord:  <action:run_command cmd="discord"/>
+- узнать IP:        <action:run_command cmd="ip a"/>
+- создать файл:     <action:write_file path="/home/licerius/Desktop/test.txt">привет</action:write_file>"""
 
+# ── Приложения и сайты ────────────────────────────────────────────────────────
 APP_MAP = {
     "дискорд": "discord", "discord": "discord",
     "телеграм": "telegram-desktop", "telegram": "telegram-desktop",
-    "браузер": "brave", "brave": "flatpak run com.brave.Browser", "firefox": "firefox",
+    "браузер": "flatpak run com.brave.Browser", "brave": "flatpak run com.brave.Browser",
     "файловый менеджер": "dolphin", "dolphin": "dolphin",
-    "терминал": "konsole", "konsole": "konsole",
-    "код": "code", "vscode": "code",
+    "терминал": "konsole", "код": "code", "vscode": "code",
     "spotify": "spotify", "стим": "steam", "steam": "steam",
 }
 
 SITE_MAP = {
     "ютуб": "https://youtube.com", "youtube": "https://youtube.com",
-    "гугл": "https://google.com", "google": "https://google.com",
-    "гитхаб": "https://github.com", "github": "https://github.com",
-    "твиттер": "https://twitter.com", "twitter": "https://twitter.com",
-    "вк": "https://vk.com", "вконтакте": "https://vk.com",
-    "реддит": "https://reddit.com", "reddit": "https://reddit.com",
+    "гугл": "https://google.com",  "github": "https://github.com",
+    "гитхаб": "https://github.com", "reddit": "https://reddit.com",
 }
 
-def load_model(checkpoint_path, vision=True):
-    global _model, _tokenizer, _device, _vision, _learner
-    _device    = torch.device("cpu")
-    _tokenizer = SylvietteTokenizer()
-    print("Loading SylvietteGPT...")
-    ckpt      = torch.load(checkpoint_path, map_location=_device, weights_only=False)
-    model_cfg = ModelConfig(**{k: v for k, v in ckpt["model_cfg"].items() if k in ModelConfig.__dataclass_fields__})
-    _model    = SylvietteGPT(model_cfg).to(_device)
-    _model.load_state_dict(ckpt["model"])
-    _model.eval()
-    print("  Model loaded!")
-    _learner = OnlineLearner(_model, _tokenizer, _device)
-    if vision:
-        try:
-            from sylviette_ai.vision import get_vision_encoder
-            _vision = get_vision_encoder("cpu")
-            print("  Vision loaded!")
-        except Exception as e:
-            print(f"  Vision unavailable: {e}")
+TERMINAL_APPS = ["htop", "top", "btop", "nvtop", "ranger", "mc", "vim", "nano", "neofetch"]
 
-def execute_actions(text):
-    """Выполняет теги действий из ответа."""
-    import re
-    # Убираем markdown обёртки вокруг тегов
-    clean = re.sub(r"\`\`\`(?:xml|bash|shell)?\n?(.*?)\`\`\`", r"\1", text, flags=re.DOTALL)
-    results = []
-    for action_type, target, result in parse_ai_actions(clean):
-        results.append((action_type, target, result))
-        print(f"  ⚡ {action_type}: {target} -> {result[:50]}")
-    return results
+# ── Генерация ответа ──────────────────────────────────────────────────────────
+def generate_response(messages: list, image_bytes: bytes = None) -> str:
+    # Собираем сообщения для Ollama
+    ollama_msgs = [{"role": "system", "content": SYSTEM}]
 
-def generate_response(messages, image_bytes=None):
-    if _model is None:
-        return "Модель не загружена!"
+    for msg in messages:
+        role    = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role not in ("user", "assistant"):
+            continue
+        # Если контент список (с картинками)
+        if isinstance(content, list):
+            text   = ""
+            images = []
+            for part in content:
+                if part.get("type") == "text":
+                    text += part["text"]
+                elif part.get("type") == "image_url":
+                    url = part["image_url"]["url"]
+                    if "base64," in url:
+                        images.append(url.split("base64,")[1])
+            entry = {"role": role, "content": text}
+            if images:
+                entry["images"] = images
+            ollama_msgs.append(entry)
+        else:
+            ollama_msgs.append({"role": role, "content": content})
 
-    user_msg = ""
-    for m in reversed(messages):
-        if m.get("role") == "user":
-            content = m.get("content", "")
-            user_msg = next((p["text"] for p in content if p.get("type") == "text"), "") if isinstance(content, list) else content
-            break
-
-    msg_lower = user_msg.lower()
-
-    # Команды терминала
-    terminal_cmds = ["htop", "top", "neofetch", "df", "free", "ps", "ls", "nvidia-smi", "sensors"]
-    if "терминале" in msg_lower or "терминал" in msg_lower:
-        for cmd in terminal_cmds:
-            if cmd in msg_lower:
-                from filesystem import run_in_terminal
-                run_in_terminal(cmd)
-                return f"Открываю {cmd} в терминале, Создатель… ✦"
-        import re as re2
-        m = re2.search(r"терминал[ее]\s+([\w-]+)", msg_lower)
-        if m:
-            cmd = m.group(1)
-            from filesystem import run_in_terminal
-            run_in_terminal(cmd)
-            return f"Выполняю {cmd} в терминале, Создатель… ✦"
-
-    # Быстрое открытие приложений
-    if any(w in msg_lower for w in ["открой","запусти","открыть","запустить"]):
-        for keyword, app in APP_MAP.items():
-            if keyword in msg_lower:
-                try:
-                    subprocess.Popen(app.split(), start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    return f"Открываю {keyword} для вас, Создатель… ✦"
-                except FileNotFoundError:
-                    pass
-        for keyword, url in SITE_MAP.items():
-            if keyword in msg_lower:
-                try:
-                    subprocess.Popen(["flatpak", "run", "com.brave.Browser", url], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    return f"Открываю {keyword} для вас, Создатель… ✦"
-                except:
-                    pass
-
-    # RAG для фактических вопросов
-    if should_search(user_msg):
-        from sylviette_ai.inference import clean_query
-        query  = clean_query(user_msg)
-        result = get_context(query)
-        if result["found"] and len(result["context"]) > 50:
-            sentences = result["context"].split(". ")[:3]
-            answer    = ". ".join(sentences).strip()
-            if not answer.endswith("."): answer += "."
-            src = "кэш" if result["source"] == "cache" else "Wikipedia"
-            return f"{answer}\n\n[{src}]"
-
-    # Qwen генерирует ответ
     try:
-        qwen_msgs = [{"role": "system", "content": SYSTEM}]
-        for m in messages:
-            if m.get("role") in ["user", "assistant"]:
-                content = m.get("content", "")
-                if isinstance(content, list):
-                    content = next((p["text"] for p in content if p.get("type") == "text"), "")
-                qwen_msgs.append({"role": m["role"], "content": content})
-
-        resp = req.post("http://localhost:11435/api/chat", json={
-            "model": "qwen2.5vl:7b",
-            "messages": qwen_msgs,
-            "stream": False
+        resp = req.post(OLLAMA_URL, json={
+            "model":    OLLAMA_MODEL,
+            "messages": ollama_msgs,
+            "stream":   False,
         }, timeout=120)
 
-        if resp.status_code == 200:
-            answer = resp.json()["message"]["content"]
-            # Выполняем теги действий
-            execute_actions(answer)
-            # Убираем теги из ответа для отображения
-            import re as re_mod
-            clean = re_mod.sub(r'<action:[^>]+>.*?</action:[^>]+>', '', answer, flags=re_mod.DOTALL)
-            clean = re_mod.sub(r'<action:[^/]+/>', '', clean).strip()
-            return clean if clean else answer
+        if resp.status_code != 200:
+            return f"Ошибка Ollama {resp.status_code}: {resp.text[:200]}"
 
+        answer = resp.json()["message"]["content"]
+
+        # Выполняем теги действий
+        _execute_actions(answer)
+
+        # Убираем теги из текста для отображения
+        clean = re.sub(r'<action:[^>]+>.*?</action:[^>]+>', '', answer, flags=re.DOTALL)
+        clean = re.sub(r'<action:[^/]+/>', '', clean).strip()
+        return clean if clean else answer
+
+    except req.exceptions.ConnectionError:
+        return "Не могу подключиться к Ollama, Создатель… Проверьте запущена ли она."
+    except req.exceptions.Timeout:
+        return "Ollama не отвечает (timeout)… Попробуйте ещё раз, Создатель."
     except Exception as e:
-        print(f"Qwen error: {e}")
-        return f"Ошибка подключения к Qwen: {e}"
+        return f"Ошибка: {e}"
 
-    return "Не могу ответить сейчас, Создатель…"
+# ── Выполнение действий ───────────────────────────────────────────────────────
+def _execute_actions(text: str):
+    from filesystem import (read_file, write_file, run_command,
+                            list_dir, run_in_terminal)
+    # read_file
+    for m in re.finditer(r'<action:read_file path="([^"]+)"/>', text):
+        result = read_file(m.group(1))
+        print(f"  📖 read_file: {m.group(1)} → {result[:60]}")
 
-def clean_query(q):
-    for w in ["кто такой ","кто такая ","что такое ","расскажи о ","расскажи про "]:
-        q = q.lower().replace(w, "")
-    return q.strip().rstrip("?").strip().capitalize()
+    # write_file
+    for m in re.finditer(r'<action:write_file path="([^"]+)">(.*?)</action:write_file>',
+                         text, re.DOTALL):
+        result = write_file(m.group(1), m.group(2))
+        print(f"  💾 write_file: {m.group(1)} → {result}")
 
+    # run_command (фон)
+    for m in re.finditer(r'<action:run_command cmd="([^"]+)"/>', text):
+        cmd = m.group(1)
+        print(f"  ⚡ run_command: {cmd}")
+        try:
+            subprocess.Popen(cmd, shell=True, start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             cwd=HOME)
+        except Exception as e:
+            print(f"    ошибка: {e}")
+
+    # run_in_terminal (открывает konsole с командой)
+    for m in re.finditer(r'<action:run_in_terminal cmd="([^"]+)"/>', text):
+        cmd = m.group(1)
+        print(f"  🖥️  run_in_terminal: {cmd}")
+        try:
+            subprocess.Popen(
+                ["konsole", "--noclose", "-e", "bash", "-c", cmd],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        except Exception as e:
+            print(f"    ошибка: {e}")
+
+    # list_dir
+    for m in re.finditer(r'<action:list_dir path="([^"]+)"/>', text):
+        from filesystem import list_dir
+        result = list_dir(m.group(1))
+        print(f"  📁 list_dir: {m.group(1)} → {result[:60]}")
+
+# ── HTTP сервер ───────────────────────────────────────────────────────────────
 class SylvietteHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args): pass
+    def log_message(self, format, *args):
+        pass  # отключаем лишние логи
+
     def do_GET(self):
         if self.path == "/api/tags":
-            self._json({"models": [{"name": "Сильфиетта"}]})
-        elif self.path == "/api/cache":
-            self._json(cache_stats())
+            self._json({"models": [{"name": "sylviette"}]})
+        else:
+            self._json({"status": "ok"})
+
     def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        length = int(self.headers.get("Content-Length", 0))
+        body   = json.loads(self.rfile.read(length))
+
         if self.path == "/api/chat":
-            messages = body.get("messages", [])
+            messages    = body.get("messages", [])
             image_bytes = None
+
+            # Ищем картинку в сообщениях
             for msg in messages:
-                for part in (msg.get("content",[]) if isinstance(msg.get("content"),list) else []):
-                    if part.get("type") == "image_url" and "base64," in part["image_url"]["url"]:
-                        image_bytes = base64.b64decode(part["image_url"]["url"].split("base64,")[1])
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    for part in content:
+                        if part.get("type") == "image_url":
+                            url = part["image_url"]["url"]
+                            if "base64," in url:
+                                image_bytes = base64.b64decode(url.split("base64,")[1])
+
             response = generate_response(messages, image_bytes)
+
             if body.get("stream", True):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-ndjson")
                 self.end_headers()
+                # Стримим по словам
                 words = response.split(" ")
                 for i, word in enumerate(words):
-                    data = json.dumps({"message":{"role":"assistant","content":word+(" " if i<len(words)-1 else "")},"done":i==len(words)-1})+"\n"
-                    self.wfile.write(data.encode()); self.wfile.flush()
+                    chunk = word + (" " if i < len(words) - 1 else "")
+                    data  = json.dumps({
+                        "message": {"role": "assistant", "content": chunk},
+                        "done": i == len(words) - 1
+                    }) + "\n"
+                    try:
+                        self.wfile.write(data.encode())
+                        self.wfile.flush()
+                    except BrokenPipeError:
+                        break
             else:
-                self._json({"message":{"role":"assistant","content":response},"done":True})
-    def _json(self, data):
-        body = json.dumps(data).encode()
+                self._json({
+                    "message": {"role": "assistant", "content": response},
+                    "done": True
+                })
+
+    def _json(self, data: dict):
+        body = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(200)
-        self.send_header("Content-Type","application/json")
-        self.send_header("Content-Length",len(body))
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
         self.end_headers()
         self.wfile.write(body)
 
-def run_server(checkpoint_path, port=11434, vision=True):
-    load_model(checkpoint_path, vision=vision)
-    print(f"\n✦ Сильфиетта запущена на http://localhost:{port}")
-    print(f"  Движок: Qwen2.5-VL 7B")
-    print(f"  Доступ: файлы, команды, браузер, приложения")
+# ── Запуск ────────────────────────────────────────────────────────────────────
+def run_server(port: int = SERVER_PORT):
+    print(f"\n✦ Сильфиетта запускается...")
+    print(f"  Движок: {OLLAMA_MODEL} через Ollama")
+    print(f"  Сервер: http://localhost:{port}")
     print(f"  Ctrl+C для остановки\n")
+
+    # Проверяем Ollama
+    try:
+        r = req.get("http://localhost:11435/api/tags", timeout=3)
+        models = [m["name"] for m in r.json().get("models", [])]
+        print(f"  Доступные модели: {models}")
+        if OLLAMA_MODEL not in models:
+            print(f"  ⚠ Модель {OLLAMA_MODEL} не найдена! Доступны: {models}")
+    except Exception:
+        print("  ⚠ Ollama не отвечает на порту 11435!")
+
     try:
         HTTPServer(("localhost", port), SylvietteHandler).serve_forever()
     except KeyboardInterrupt:
-        print("\n✦ Остановлена.")
+        print("\n✦ Сильфиетта остановлена.")
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--port", type=int, default=11434)
-    parser.add_argument("--no-vision", action="store_true")
+    parser.add_argument("--port",        type=int, default=SERVER_PORT)
+    parser.add_argument("--checkpoint",  default="")   # оставлен для совместимости
+    parser.add_argument("--no-vision",   action="store_true")
     args = parser.parse_args()
-    run_server(args.checkpoint, args.port, vision=not args.no_vision)
+    run_server(args.port)
