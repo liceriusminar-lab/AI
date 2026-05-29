@@ -21,6 +21,10 @@ from filesystem import parse_ai_actions
 from ui.settings_window import SettingsWindow, load_settings, build_stylesheet, get_bubble_style
 from ui.file_panel import FilePanel
 from ui.dashboard import DashboardWindow
+from websearch import search_and_summarize, should_search_web
+from profiles import load_profiles, set_active_profile, get_active_profile, save_custom_profile, delete_custom_profile
+from plugin_manager import list_plugins, toggle_plugin
+from stt import STTWorker, check_microphone
 import markdown
 
 
@@ -34,6 +38,9 @@ def _is_light(hex_color: str) -> bool:
 
 
 class MainWindow(QMainWindow):
+    _stt_result_signal = __import__("PyQt6.QtCore", fromlist=["pyqtSignal"]).pyqtSignal(str)
+    _stt_error_signal  = __import__("PyQt6.QtCore", fromlist=["pyqtSignal"]).pyqtSignal(str)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Sylviette AI")
@@ -54,6 +61,8 @@ class MainWindow(QMainWindow):
         ids = self.chat_mgr.get_sorted_ids()
         self._load_chat(ids[0]) if ids else self._new_chat()
         self._load_models()
+        self._stt_result_signal.connect(self._on_stt_result)
+        self._stt_error_signal.connect(self._on_stt_error)
         self._setup_shortcuts()
         self._setup_tray()
 
@@ -114,7 +123,15 @@ class MainWindow(QMainWindow):
         files_btn.clicked.connect(self._toggle_files)
         dash_btn = QPushButton("📊 Дашборд"); dash_btn.setObjectName("delete_btn")
         dash_btn.clicked.connect(self._open_dashboard)
-        for w in [title, self.server_indicator, subtitle, new_btn, self.search_box, self.chat_list, self.model_selector, del_btn, settings_btn, files_btn, dash_btn]:
+
+        self.profile_btn = QPushButton(f"🎯 {get_active_profile()}")
+        self.profile_btn.setObjectName("delete_btn")
+        self.profile_btn.clicked.connect(self._open_profiles)
+
+        plugins_btn = QPushButton("🧩 Плагины"); plugins_btn.setObjectName("delete_btn")
+        plugins_btn.clicked.connect(self._open_plugins)
+
+        for w in [title, self.server_indicator, subtitle, new_btn, self.profile_btn, self.search_box, self.chat_list, self.model_selector, del_btn, settings_btn, files_btn, dash_btn, plugins_btn]:
             layout.addWidget(w)
         layout.addSpacing(12)
         return sidebar
@@ -190,8 +207,15 @@ class MainWindow(QMainWindow):
         self.send_btn.setToolTip("Отправить (Enter)")
         self.send_btn.clicked.connect(self._send_message)
 
+        self.mic_btn = QPushButton("🎤"); self.mic_btn.setObjectName("mic_btn")
+        self.mic_btn.setFixedSize(36, 36)
+        self.mic_btn.setToolTip("Голосовой ввод")
+        self.mic_btn.setCheckable(True)
+        self.mic_btn.clicked.connect(self._toggle_stt)
+
         outer_layout.addWidget(attach_btn)
         outer_layout.addWidget(self.input_box)
+        outer_layout.addWidget(self.mic_btn, alignment=__import__("PyQt6.QtCore", fromlist=["Qt"]).Qt.AlignmentFlag.AlignBottom)
         outer_layout.addWidget(self.send_btn, alignment=__import__("PyQt6.QtCore", fromlist=["Qt"]).Qt.AlignmentFlag.AlignBottom)
         layout.addWidget(self._md_preview)
         layout.addWidget(outer)
@@ -204,6 +228,35 @@ class MainWindow(QMainWindow):
         self._md_toggle.clicked.connect(self._toggle_md_preview)
         outer_layout.insertWidget(1, self._md_toggle)
         return panel
+
+    def _toggle_stt(self, checked):
+        if not checked:
+            return
+        ok, msg = check_microphone()
+        if not ok:
+            self.status_label.setText(f"Микрофон недоступен: {msg}")
+            self.mic_btn.setChecked(False)
+            return
+        self.mic_btn.setStyleSheet("QPushButton{background:#e06c75;color:white;border:none;border-radius:18px;font-size:16px;}")
+        self.status_label.setText("🎤 Говорите…")
+        self._stt_worker = STTWorker(
+            on_result=self._stt_result_signal.emit,
+            on_error=self._stt_error_signal.emit,
+        )
+        self._stt_worker.start()
+
+    def _on_stt_result(self, text):
+        self.mic_btn.setChecked(False)
+        self.mic_btn.setStyleSheet("")
+        self.input_box.setPlainText(text)
+        self.status_label.setText("✓ Распознано")
+        QTimer.singleShot(1500, lambda: self.status_label.setText("Готово ✦"))
+
+    def _on_stt_error(self, err):
+        self.mic_btn.setChecked(False)
+        self.mic_btn.setStyleSheet("")
+        self.status_label.setText(f"🎤 {err}")
+        QTimer.singleShot(3000, lambda: self.status_label.setText("Готово ✦"))
 
     def _toggle_md_preview(self, checked):
         self._md_preview.setVisible(checked)
@@ -329,6 +382,8 @@ class MainWindow(QMainWindow):
             text    = next((p["text"] for p in content if p.get("type") == "text"), "")
             has_img = any(p.get("type") == "image_url" for p in content)
             display = ("📷 [картинка]\n" if has_img else "") + text
+        elif isinstance(content, dict) and "_display" in content:
+            display = content["_display"]
         else:
             display = content
         self._append_bubble(role, display, msg_index=index)
@@ -552,6 +607,25 @@ class MainWindow(QMainWindow):
         self.send_btn.setEnabled(False)
         self.stream_buffer = ""
 
+        # Веб-поиск если нужен
+        if should_search_web(text):
+            self.status_label.setText("🌐 Ищу в интернете…")
+            import threading
+            def _search():
+                result = search_and_summarize(text)
+                if result["found"]:
+                    # Добавляем контекст поиска в последнее сообщение
+                    msgs = self.chat_mgr.get_messages(self.current_chat_id)
+                    if msgs and msgs[-1]["role"] == "user":
+                        orig = msgs[-1]["content"]
+                        orig_text = orig if isinstance(orig, str) else                             next((p["text"] for p in orig if p.get("type") == "text"), "")
+                        augmented = orig_text + "\n\n[Контекст из интернета]:\n" + result["summary"]
+
+                        msgs[-1]["_search_context"] = result["summary"]
+            t = threading.Thread(target=_search, daemon=True)
+            t.start()
+            t.join(timeout=8)
+
         # Типинг индикатор
         if self._current_settings.get("typing_dots", True):
             self._typing_frames = ["Сильфиетта думает ▌", "Сильфиетта думает  "]
@@ -581,8 +655,11 @@ class MainWindow(QMainWindow):
     def _on_token(self, token):
         self.stream_buffer += token
         self._rebuild_display()
+        # Скрываем теги действий при стриминге
+        display = re.sub(r'<action:[^>]+>.*?</action:[^>]+>', '', self.stream_buffer, flags=re.DOTALL)
+        display = re.sub(r'<action:[^/]+/>', '', display).strip()
         cursor = " ▌" if self._current_settings.get("typing_dots", True) else ""
-        self._append_bubble("assistant", self.stream_buffer + cursor, raw=True)
+        self._append_bubble("assistant", display + cursor, raw=True)
 
     def _on_finished(self, full):
         self._stop_typing()
@@ -920,6 +997,94 @@ class MainWindow(QMainWindow):
         names = ", ".join(n for n, _ in self.pending_files)
         self.attach_label.setText("📎 " + names)
         self.attach_label.show()
+
+    def _open_profiles(self):
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QTextEdit, QInputDialog
+        profiles = load_profiles()
+        active   = get_active_profile()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("🎯 Профили задач")
+        dlg.resize(500, 400)
+        s = self._current_settings
+        bg = s.get("bg", "#1a1b26")
+        dlg.setStyleSheet(f"QDialog{{background:{bg};color:#abb2bf;}}QListWidget{{background:#1e1f2e;color:#abb2bf;border:1px solid #2a2b3d;border-radius:6px;}}QListWidget::item{{padding:8px;}}QListWidget::item:selected{{background:#2a2b3d;color:#dde3f0;}}QTextEdit{{background:#1e1f2e;color:#abb2bf;border:1px solid #2a2b3d;border-radius:6px;padding:8px;}}QPushButton{{background:#2a2b3d;color:#abb2bf;border:none;border-radius:6px;padding:8px 16px;}}QPushButton:hover{{background:#61afef;color:white;}}")
+        l = QVBoxLayout(dlg)
+        lbl = QLabel("Выберите профиль — он изменит стиль ответов Сильфиетты:")
+        lbl.setStyleSheet("color:#dde3f0;font-size:13px;margin-bottom:4px;")
+        l.addWidget(lbl)
+        lst = QListWidget()
+        desc_box = QTextEdit(); desc_box.setReadOnly(True); desc_box.setMaximumHeight(80)
+        for name, data in profiles.items():
+            item = QListWidgetItem(("✓ " if name == active else "  ") + name)
+            item.setData(32, name)
+            lst.addItem(item)
+        def on_select(item):
+            name = item.data(32)
+            desc_box.setPlainText(profiles[name]["description"] + "\n\n" + profiles[name].get("extra_prompt", "")[:200])
+
+        lst.itemClicked.connect(on_select)
+        l.addWidget(lst)
+        l.addWidget(QLabel("Описание:"))
+        l.addWidget(desc_box)
+        btns = QHBoxLayout()
+        apply_btn = QPushButton("✓ Применить")
+        new_btn_p = QPushButton("+ Новый профиль")
+        del_btn_p = QPushButton("🗑 Удалить")
+        for b in [apply_btn, new_btn_p, del_btn_p]: btns.addWidget(b)
+        l.addLayout(btns)
+        def apply():
+            item = lst.currentItem()
+            if not item: return
+            name = item.data(32)
+            set_active_profile(name)
+            self.profile_btn.setText(f"🎯 {name}")
+            self.status_label.setText(f"Профиль: {name}")
+            dlg.accept()
+        def new_profile():
+            name, ok = QInputDialog.getText(dlg, "Новый профиль", "Название:")
+            if not ok or not name: return
+            prompt, ok2 = QInputDialog.getMultiLineText(dlg, "Промпт", "Инструкция для Сильфиетты:")
+            if not ok2: return
+            save_custom_profile(name, "Пользовательский профиль", prompt)
+            dlg.accept(); self._open_profiles()
+        def del_profile():
+            item = lst.currentItem()
+            if not item: return
+            name = item.data(32)
+            if delete_custom_profile(name):
+                dlg.accept(); self._open_profiles()
+            else:
+                self.status_label.setText("Нельзя удалить стандартный профиль")
+        apply_btn.clicked.connect(apply)
+        new_btn_p.clicked.connect(new_profile)
+        del_btn_p.clicked.connect(del_profile)
+        dlg.exec()
+
+    def _open_plugins(self):
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QCheckBox
+        plugins = list_plugins()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("🧩 Плагины")
+        dlg.resize(480, 380)
+        s = self._current_settings
+        bg = s.get("bg", "#1a1b26")
+        dlg.setStyleSheet(f"QDialog{{background:{bg};color:#abb2bf;}}QCheckBox{{color:#abb2bf;spacing:8px;font-size:13px;padding:6px;}}QCheckBox::indicator{{width:16px;height:16px;border-radius:3px;border:1px solid #2a2b3d;background:#252636;}}QCheckBox::indicator:checked{{background:#61afef;border-color:#61afef;}}QLabel{{color:#abb2bf;}}QPushButton{{background:#2a2b3d;color:#abb2bf;border:none;border-radius:6px;padding:8px 16px;}}QPushButton:hover{{background:#61afef;color:white;}}")
+        l = QVBoxLayout(dlg)
+        lbl = QLabel("Управление плагинами:")
+        lbl.setStyleSheet("color:#dde3f0;font-size:13px;margin-bottom:8px;")
+        l.addWidget(lbl)
+        if not plugins:
+            l.addWidget(QLabel("Плагины не найдены в папке plugins/"))
+        for p in plugins:
+            cb = QCheckBox(f"{p['name']}  —  {p['description']}")
+            cb.setChecked(p["enabled"])
+            cb.stateChanged.connect(lambda v, pid=p["id"]: toggle_plugin(pid, bool(v)))
+            l.addWidget(cb)
+        l.addStretch()
+        close_btn = QPushButton("Закрыть")
+        close_btn.clicked.connect(dlg.accept)
+        l.addWidget(close_btn)
+        dlg.exec()
 
     def _open_dashboard(self):
         w = DashboardWindow(self.chat_mgr, self)

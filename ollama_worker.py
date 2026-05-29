@@ -5,6 +5,10 @@ import requests
 from PyQt6.QtCore import QThread, pyqtSignal
 from config import OLLAMA_URL
 from memory import get_memory_context, add_to_memory
+from profiles import get_profile_prompt, get_active_profile
+from plugin_manager import find_plugin_for_query, run_plugin
+from profiles import get_profile_prompt, get_active_profile
+from plugin_manager import find_plugin_for_query, run_plugin
 
 OLLAMA_DIRECT = "http://localhost:11435/api/chat"
 HOME = "/home/licerius"
@@ -98,7 +102,10 @@ class OllamaWorker(QThread):
         for msg in self.messages:
             role    = msg["role"]
             content = msg["content"]
-            if isinstance(content, list):
+            if isinstance(content, dict) and "_search_context" in content:
+                full_text = content.get("_display", "") + "\n\n[Контекст из интернета]:\n" + content["_search_context"]
+                converted.append({"role": role, "content": full_text})
+            elif isinstance(content, list):
                 text   = ""
                 images = []
                 for part in content:
@@ -416,11 +423,20 @@ RULES:
 - Respond in Russian only
 - Address user as Создатель"""
 
+            # Добавляем память и профиль
+            memory_ctx     = get_memory_context()
+            profile_prompt = get_profile_prompt()
+            extra = ""
+            if memory_ctx:
+                extra += "\n\n" + memory_ctx
+            if profile_prompt:
+                extra += "\n\n[Режим работы]: " + profile_prompt
+            full_system = SYSTEM + extra
             # Вставляем системный промпт в начало
             if messages and messages[0].get("role") == "system":
-                messages[0]["content"] = SYSTEM
+                messages[0]["content"] = full_system
             else:
-                messages.insert(0, {"role": "system", "content": SYSTEM})
+                messages.insert(0, {"role": "system", "content": full_system})
 
             # Идём напрямую к Ollama
             resp = requests.post(OLLAMA_DIRECT, json={
@@ -457,6 +473,26 @@ RULES:
 
             # Сохраняем в память
             add_to_memory(self.messages)
+            # Проверяем плагины
+            last_user = next((m["content"] for m in reversed(self.messages) if m["role"] == "user"), "")
+            if isinstance(last_user, str):
+                plugin_id = find_plugin_for_query(last_user)
+                if plugin_id:
+                    plugin_result = run_plugin(plugin_id, last_user, {})
+                    if plugin_result:
+                        full = plugin_result + "\n\n" + full
+                        self.finished.emit(full)
+                        return
+            # Проверяем плагины
+            last_user = next((m["content"] for m in reversed(self.messages) if m["role"] == "user"), "")
+            if isinstance(last_user, str):
+                plugin_id = find_plugin_for_query(last_user)
+                if plugin_id:
+                    plugin_result = run_plugin(plugin_id, last_user, {})
+                    if plugin_result:
+                        full = plugin_result + "\n\n" + full
+                        self.finished.emit(full)
+                        return
 
             # Уведомление если есть действия
             if any(tag in full for tag in ['<action:run_in_terminal', '<action:run_command', '<action:write_file']):

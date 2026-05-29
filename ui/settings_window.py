@@ -204,6 +204,14 @@ QPushButton#md_toggle_btn {{
 QPushButton#md_toggle_btn:checked {{
     background-color: {accent2}; color: white;
 }}
+QPushButton#mic_btn {{
+    background-color: {border};
+    color: {text_dim};
+    border: none; border-radius: 18px;
+    font-size: 16px;
+}}
+QPushButton#mic_btn:hover {{ background-color: {accent}; color: white; }}
+QPushButton#mic_btn:checked {{ background-color: {accent}; color: white; }}
 QTextEdit#md_preview {{
     background-color: {input_bg};
     color: {text};
