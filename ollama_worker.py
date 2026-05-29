@@ -7,8 +7,10 @@ from config import OLLAMA_URL
 from memory import get_memory_context, add_to_memory
 from profiles import get_profile_prompt, get_active_profile
 from plugin_manager import find_plugin_for_query, run_plugin
+from calendar_manager import handle_calendar_command
 from profiles import get_profile_prompt, get_active_profile
 from plugin_manager import find_plugin_for_query, run_plugin
+from calendar_manager import handle_calendar_command
 
 OLLAMA_DIRECT = "http://localhost:11435/api/chat"
 HOME = "/home/licerius"
@@ -473,6 +475,13 @@ RULES:
 
             # Сохраняем в память
             add_to_memory(self.messages)
+            # Проверяем команды календаря
+            last_user = next((m["content"] for m in reversed(self.messages) if m["role"] == "user"), "")
+            if isinstance(last_user, str):
+                cal_response = handle_calendar_command(last_user)
+                if cal_response:
+                    self.finished.emit(cal_response)
+                    return
             # Проверяем плагины
             last_user = next((m["content"] for m in reversed(self.messages) if m["role"] == "user"), "")
             if isinstance(last_user, str):

@@ -24,6 +24,8 @@ from ui.dashboard import DashboardWindow
 from websearch import search_and_summarize, should_search_web
 from profiles import load_profiles, set_active_profile, get_active_profile, save_custom_profile, delete_custom_profile
 from plugin_manager import list_plugins, toggle_plugin
+from calendar_manager import handle_calendar_command, get_today, ReminderDaemon
+from ui.calendar_widget import CalendarWidget
 from stt import STTWorker, check_microphone
 import markdown
 
@@ -62,6 +64,7 @@ class MainWindow(QMainWindow):
         self._load_chat(ids[0]) if ids else self._new_chat()
         self._load_models()
         self._stt_result_signal.connect(self._on_stt_result)
+        self._start_reminder_daemon()
         self._stt_error_signal.connect(self._on_stt_error)
         self._setup_shortcuts()
         self._setup_tray()
@@ -130,8 +133,10 @@ class MainWindow(QMainWindow):
 
         plugins_btn = QPushButton("🧩 Плагины"); plugins_btn.setObjectName("delete_btn")
         plugins_btn.clicked.connect(self._open_plugins)
+        calendar_btn = QPushButton("📅 Календарь"); calendar_btn.setObjectName("delete_btn")
+        calendar_btn.clicked.connect(self._open_calendar)
 
-        for w in [title, self.server_indicator, subtitle, new_btn, self.profile_btn, self.search_box, self.chat_list, self.model_selector, del_btn, settings_btn, files_btn, dash_btn, plugins_btn]:
+        for w in [title, self.server_indicator, subtitle, new_btn, self.profile_btn, self.search_box, self.chat_list, self.model_selector, del_btn, settings_btn, files_btn, dash_btn, plugins_btn, calendar_btn]:
             layout.addWidget(w)
         layout.addSpacing(12)
         return sidebar
@@ -997,6 +1002,36 @@ class MainWindow(QMainWindow):
         names = ", ".join(n for n, _ in self.pending_files)
         self.attach_label.setText("📎 " + names)
         self.attach_label.show()
+
+    def _start_reminder_daemon(self):
+        def on_reminder(event):
+            from PyQt6.QtCore import QMetaObject, Qt
+            # Вызываем в главном потоке
+            QMetaObject.invokeMethod(self, "_show_reminder",
+                Qt.ConnectionType.QueuedConnection,
+                __import__("PyQt6.QtCore", fromlist=["Q_ARG"]).Q_ARG(str, event["title"]),
+                __import__("PyQt6.QtCore", fromlist=["Q_ARG"]).Q_ARG(str, event["datetime"]))
+        self._reminder_daemon = ReminderDaemon(on_reminder)
+        self._reminder_daemon.start()
+
+    def _show_reminder_notify(self, title, dt_str):
+        try:
+            dt = __import__("datetime").datetime.fromisoformat(dt_str)
+            dt_fmt = dt.strftime("%H:%M")
+        except Exception:
+            dt_fmt = dt_str
+        if hasattr(self, "_tray"):
+            self._tray.showMessage(
+                f"📅 Напоминание",
+                f"{title} в {dt_fmt}",
+                __import__("PyQt6.QtWidgets", fromlist=["QSystemTrayIcon"]).QSystemTrayIcon.MessageIcon.Information,
+                8000
+            )
+        self.status_label.setText(f"📅 Напоминание: {title} в {dt_fmt}")
+
+    def _open_calendar(self):
+        w = CalendarWidget(self)
+        w.exec()
 
     def _open_profiles(self):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QTextEdit, QInputDialog
