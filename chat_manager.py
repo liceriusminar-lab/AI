@@ -1,7 +1,13 @@
 import json
 import os
 import datetime
+from pathlib import Path
 from config import HISTORY_FILE
+try:
+    from encryption import encrypt_data, decrypt_data, is_encryption_available
+    _ENCRYPT = is_encryption_available()
+except ImportError:
+    _ENCRYPT = False
 
 
 class ChatManager:
@@ -14,19 +20,37 @@ class ChatManager:
         self.load()
 
     def load(self):
-        if os.path.exists(HISTORY_FILE):
-            try:
+        enc_file = Path(HISTORY_FILE).with_suffix(".enc")
+        try:
+            if _ENCRYPT and enc_file.exists():
+                data = decrypt_data(enc_file.read_bytes())
+                self.chats = json.loads(data)
+            elif os.path.exists(HISTORY_FILE):
                 with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                     self.chats = json.load(f)
-                # Прогреваем кэш последних чатов
-                for cid in self.get_sorted_ids()[:self.CACHE_SIZE]:
-                    self._msg_cache[cid] = self.chats[cid]["messages"]
-            except Exception:
+                # Если шифрование доступно — сразу шифруем
+                if _ENCRYPT:
+                    self.save()
+            else:
                 self.chats = {}
+            # Прогреваем кэш последних чатов
+            for cid in self.get_sorted_ids()[:self.CACHE_SIZE]:
+                self._msg_cache[cid] = self.chats[cid]["messages"]
+        except Exception:
+            self.chats = {}
 
     def save(self):
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.chats, f, ensure_ascii=False, indent=2)
+        data = json.dumps(self.chats, ensure_ascii=False, indent=2)
+        enc_file = Path(HISTORY_FILE).with_suffix(".enc")
+        if _ENCRYPT:
+            enc_file.parent.mkdir(parents=True, exist_ok=True)
+            enc_file.write_bytes(encrypt_data(data))
+            # Удаляем незашифрованный если есть
+            if os.path.exists(HISTORY_FILE):
+                os.remove(HISTORY_FILE)
+        else:
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                f.write(data)
         self._dirty.clear()
 
     def save_if_dirty(self):

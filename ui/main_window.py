@@ -26,6 +26,8 @@ from profiles import load_profiles, set_active_profile, get_active_profile, save
 from plugin_manager import list_plugins, toggle_plugin
 from calendar_manager import handle_calendar_command, get_today, ReminderDaemon
 from ui.calendar_widget import CalendarWidget
+from ui.sysmon_widget import SysMonWidget
+from encryption import get_encryption_status
 from stt import STTWorker, check_microphone
 import markdown
 
@@ -101,6 +103,7 @@ class MainWindow(QMainWindow):
         self.server_indicator = QLabel("⬤ Подключение…")
         self.server_indicator.setObjectName("server_indicator")
         self.server_indicator.setStyleSheet("color:#565c7a;font-size:11px;padding:2px 16px 6px 16px;")
+        self._sysmon = SysMonWidget()
         new_btn  = QPushButton("+ Новый чат"); new_btn.setObjectName("new_chat_btn")
         new_btn.clicked.connect(self._new_chat)
 
@@ -136,7 +139,7 @@ class MainWindow(QMainWindow):
         calendar_btn = QPushButton("📅 Календарь"); calendar_btn.setObjectName("delete_btn")
         calendar_btn.clicked.connect(self._open_calendar)
 
-        for w in [title, self.server_indicator, subtitle, new_btn, self.profile_btn, self.search_box, self.chat_list, self.model_selector, del_btn, settings_btn, files_btn, dash_btn, plugins_btn, calendar_btn]:
+        for w in [title, self.server_indicator, subtitle, new_btn, self.profile_btn, self.search_box, self.chat_list, self.model_selector, del_btn, settings_btn, files_btn, dash_btn, plugins_btn, calendar_btn, self._sysmon]:
             layout.addWidget(w)
         layout.addSpacing(12)
         return sidebar
@@ -681,6 +684,88 @@ class MainWindow(QMainWindow):
         # TTS если окно скрыто
         if not self.isVisible() and clean:
             self._speak(clean[:200])
+        # Показываем кнопку "Продолжить" если ответ похож на обрезанный
+        if self._looks_truncated(clean):
+            self._show_continue_btn()
+        else:
+            self._hide_continue_btn()
+
+    def _looks_truncated(self, text: str) -> bool:
+        if not text or len(text) < 100:
+            return False
+        # Признаки обрезанного ответа
+        import re
+        stripped = text.rstrip()
+        if stripped.endswith(("...", "…")):
+            return True
+        # Незакрытый блок кода
+        if stripped.count("```") % 2 != 0:
+            return True
+        # Обрезанное предложение (нет точки/вопроса/восклицания в конце)
+        if len(stripped) > 200 and stripped[-1] not in ".!?»`":
+            return True
+        return False
+
+    def _show_continue_btn(self):
+        if not hasattr(self, "_continue_btn"):
+            from PyQt6.QtWidgets import QPushButton
+            self._continue_btn = QPushButton("▶ Продолжить ответ")
+            self._continue_btn.setObjectName("continue_btn")
+            self._continue_btn.clicked.connect(self._continue_generation)
+            # Вставляем над полем ввода
+            parent_layout = self.centralWidget().layout()
+            chat_widget = parent_layout.itemAt(0).widget()
+            if chat_widget:
+                idx = chat_widget.layout().count() - 2
+                chat_widget.layout().insertWidget(idx, self._continue_btn)
+        self._continue_btn.show()
+
+    def _hide_continue_btn(self):
+        if hasattr(self, "_continue_btn"):
+            self._continue_btn.hide()
+
+    def _continue_generation(self):
+        if not self.current_chat_id: return
+        self._hide_continue_btn()
+        msgs    = self.chat_mgr.get_messages(self.current_chat_id)
+        history = [{"role": "system", "content": "Продолжи свой предыдущий ответ с того места где остановился. Не повторяй уже написанное."}] + list(msgs)
+        model   = self.model_selector.currentText()
+        self.send_btn.setEnabled(False)
+        self.stream_buffer = ""
+        self.status_label.setText("Продолжаю…")
+        self.worker = OllamaWorker(model, history)
+        self.worker.token_received.connect(self._on_continue_token)
+        self.worker.finished.connect(self._on_continue_finished)
+        self.worker.error.connect(self._on_error)
+        self.worker.start()
+
+    def _on_continue_token(self, token):
+        self.stream_buffer += token
+        display = re.sub(r'<action:[^>]+>.*?</action:[^>]+>', '', self.stream_buffer, flags=re.DOTALL)
+        display = re.sub(r'<action:[^/]+/>', '', display).strip()
+        cursor  = " ▌" if self._current_settings.get("typing_dots", True) else ""
+        # Дописываем к последнему пузырьку AI
+        msgs = self.chat_mgr.get_messages(self.current_chat_id)
+        if msgs and msgs[-1]["role"] == "assistant":
+            combined = msgs[-1]["content"] + display + cursor
+            self._rebuild_display()
+            self._append_bubble("assistant", combined, raw=True)
+        else:
+            self._append_bubble("assistant", display + cursor, raw=True)
+
+    def _on_continue_finished(self, full):
+        self._stop_typing()
+        msgs = self.chat_mgr.get_messages(self.current_chat_id)
+        if msgs and msgs[-1]["role"] == "assistant":
+            combined = msgs[-1]["content"] + full
+            self.chat_mgr.edit_message(self.current_chat_id, len(msgs)-1, combined)
+        else:
+            self.chat_mgr.add_message(self.current_chat_id, "assistant", full)
+        self._rebuild_display()
+        self.send_btn.setEnabled(True)
+        self.status_label.setText("Готово ✦")
+        if self._looks_truncated(full):
+            self._show_continue_btn()
 
     def _on_error(self, err):
         self._stop_typing()
