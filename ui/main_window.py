@@ -121,26 +121,25 @@ class MainWindow(QMainWindow):
         self.chat_list.customContextMenuRequested.connect(self._chat_context_menu)
 
         self.model_selector = QComboBox(); self.model_selector.setObjectName("model_selector")
-        del_btn = QPushButton("Удалить чат"); del_btn.setObjectName("delete_btn")
-        del_btn.clicked.connect(self._delete_current_chat)
-        settings_btn = QPushButton("⚙ Настройки"); settings_btn.setObjectName("delete_btn")
-        settings_btn.clicked.connect(self._open_settings)
-        files_btn = QPushButton("📁 Файлы"); files_btn.setObjectName("delete_btn")
-        files_btn.clicked.connect(self._toggle_files)
-        dash_btn = QPushButton("📊 Дашборд"); dash_btn.setObjectName("delete_btn")
-        dash_btn.clicked.connect(self._open_dashboard)
 
+        # Профиль — виден в сайдбаре
         self.profile_btn = QPushButton(f"🎯 {get_active_profile()}")
         self.profile_btn.setObjectName("delete_btn")
         self.profile_btn.clicked.connect(self._open_profiles)
 
-        plugins_btn = QPushButton("🧩 Плагины"); plugins_btn.setObjectName("delete_btn")
-        plugins_btn.clicked.connect(self._open_plugins)
-        calendar_btn = QPushButton("📅 Календарь"); calendar_btn.setObjectName("delete_btn")
-        calendar_btn.clicked.connect(self._open_calendar)
+        # Файлы — виден в сайдбаре
+        files_btn = QPushButton("📁 Файлы"); files_btn.setObjectName("delete_btn")
+        files_btn.clicked.connect(self._toggle_files)
 
-        for w in [title, self.server_indicator, subtitle, new_btn, self.profile_btn, self.search_box, self.chat_list, self.model_selector, del_btn, settings_btn, files_btn, dash_btn, plugins_btn, calendar_btn, self._sysmon]:
+        # Доп. настройки — всё остальное внутри
+        more_btn = QPushButton("⚙ Доп. настройки"); more_btn.setObjectName("delete_btn")
+        more_btn.clicked.connect(self._open_more_menu)
+
+        for w in [title, self.server_indicator, subtitle, new_btn, self.profile_btn,
+                  self.search_box, self.chat_list, self.model_selector,
+                  files_btn, more_btn, self._sysmon]:
             layout.addWidget(w)
+        layout.addSpacing(12)
         layout.addSpacing(12)
         return sidebar
 
@@ -1117,6 +1116,28 @@ class MainWindow(QMainWindow):
     def _open_calendar(self):
         w = CalendarWidget(self)
         w.exec()
+
+    def _open_more_menu(self):
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QCursor
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu{background:#1e1f2e;color:#abb2bf;border:1px solid #2a2b3d;"
+            "border-radius:8px;padding:6px;}"
+            "QMenu::item{padding:8px 20px;border-radius:4px;}"
+            "QMenu::item:selected{background:#2a2b3d;color:#dde3f0;}"
+            "QMenu::separator{height:1px;background:#2a2b3d;margin:4px 8px;}"
+        )
+        menu.addAction("\u2699\ufe0f \u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438",       self._open_settings)
+        menu.addAction("\U0001f4ca \u0414\u0430\u0448\u0431\u043e\u0440\u0434",         self._open_dashboard)
+        menu.addAction("\U0001f9e9 \u041f\u043b\u0430\u0433\u0438\u043d\u044b",         self._open_plugins)
+        menu.addSeparator()
+        menu.addAction("\U0001f5d1 \u0423\u0434\u0430\u043b\u0438\u0442\u044c \u0447\u0430\u0442",     self._delete_current_chat)
+        menu.addSeparator()
+        menu.addAction("\U0001f4c4 \u042d\u043a\u0441\u043f\u043e\u0440\u0442 MD",    lambda: self._export_md(self.current_chat_id) if self.current_chat_id else None)
+        menu.addAction("\U0001f4cb \u042d\u043a\u0441\u043f\u043e\u0440\u0442 PDF",   lambda: self._export_pdf(self.current_chat_id) if self.current_chat_id else None)
+        menu.addAction("\U0001f4ca \u0421\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430", lambda: self._show_stats(self.current_chat_id) if self.current_chat_id else None)
+        menu.exec(QCursor.pos())
 
     def _open_profiles(self):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QTextEdit, QInputDialog
