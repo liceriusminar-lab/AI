@@ -8,6 +8,7 @@ from memory import get_memory_context, add_to_memory
 from profiles import get_profile_prompt, get_active_profile
 from plugin_manager import find_plugin_for_query, run_plugin
 from calendar_manager import handle_calendar_command
+from macros_engine import find_macro, run_macro
 from profiles import get_profile_prompt, get_active_profile
 from plugin_manager import find_plugin_for_query, run_plugin
 from calendar_manager import handle_calendar_command
@@ -376,6 +377,18 @@ class OllamaWorker(QThread):
                     c = m.get("content", "")
                     last_msg = c if isinstance(c, str) else next((p["text"] for p in c if p.get("type") == "text"), "")
                     break
+
+            # ── Макросы ──────────────────────────────────────────────
+            macro = find_macro(last_msg)
+            if macro:
+                import threading
+                def _run_macro_bg():
+                    run_macro(macro)
+                t = threading.Thread(target=_run_macro_bg, daemon=True)
+                t.start()
+                self.finished.emit(macro.get("response", "Выполняю, Создатель… ✦"))
+                return
+            # ─────────────────────────────────────────────────────────
             # Не выполняем hardcode если это вопрос
             question_words = ['как ', 'что ', 'почему ', 'зачем ', 'когда ', 'где ', 
                             'кто ', 'расшифруй', 'объясни', 'расскажи', 'что такое',

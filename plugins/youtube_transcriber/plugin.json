@@ -1,0 +1,8 @@
+{
+  "name": "🎬 YouTube Транскрипция",
+  "description": "Транскрибирует YouTube видео по ссылке",
+  "version": "1.0",
+  "enabled": true,
+  "triggers": ["транскрибируй", "расшифруй видео", "субтитры", "youtube транскрипция", "transcribe"],
+  "requires": ["youtube-transcript-api"]
+}

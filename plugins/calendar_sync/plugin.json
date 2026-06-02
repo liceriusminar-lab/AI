@@ -1,0 +1,16 @@
+{
+  "name": "📅 Синхронизация календаря",
+  "description": "Читает .ics файлы из Evolution/Thunderbird и показывает события в чате",
+  "version": "1.0",
+  "enabled": true,
+  "triggers": [
+    "события из evolution",
+    "синхронизируй календарь",
+    "загрузи ics",
+    "импорт календаря",
+    "читай ics"
+  ],
+  "requires": [
+    "icalendar"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "📖 Arch Wiki",
+  "description": "Ищет информацию в Arch Linux Wiki",
+  "version": "1.0",
+  "enabled": true,
+  "triggers": ["arch wiki", "найди в arch", "arch linux", "archwiki", "как настроить arch", "пакет arch"],
+  "requires": ["markdownify"]
+}

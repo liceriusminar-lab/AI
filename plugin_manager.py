@@ -3,9 +3,18 @@ plugin_manager.py — менеджер плагинов Сильфиетты
 Плагин = папка в ~/ai-assistant/plugins/ с файлами:
   plugin.json  — метаданные
   main.py      — код (функция run(query, context) -> str)
+
+Поля plugin.json:
+  name        — название
+  description — описание
+  version     — версия
+  enabled     — включён ли
+  triggers    — список триггерных фраз
+  requires    — список pip пакетов (устанавливаются автоматически)
 """
 import json
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,6 +29,35 @@ def _load_meta(plugin_dir: Path) -> dict:
         return json.loads(meta_file.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _ensure_requirements(requires: list):
+    """Устанавливает недостающие зависимости плагина."""
+    if not requires:
+        return
+    pkg_map = {
+        "beautifulsoup4": "bs4",
+        "youtube-transcript-api": "youtube_transcript_api",
+        "markdownify": "markdownify",
+        "icalendar": "icalendar",
+        "requests": "requests",
+    }
+    for pkg in requires:
+        import_name = pkg_map.get(pkg, pkg.replace("-", "_"))
+        try:
+            __import__(import_name)
+        except ImportError:
+            print(f"  📦 Плагин: устанавливаю {pkg}…", flush=True)
+            try:
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", pkg,
+                     "--break-system-packages", "-q"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                print(f"  ✓ {pkg} установлен", flush=True)
+            except Exception as e:
+                print(f"  ⚠ Не удалось установить {pkg}: {e}", flush=True)
 
 
 def list_plugins() -> list:
@@ -40,17 +78,23 @@ def list_plugins() -> list:
             "version":     meta.get("version", "1.0"),
             "enabled":     meta.get("enabled", True),
             "triggers":    meta.get("triggers", []),
+            "requires":    meta.get("requires", []),
             "path":        str(d),
         })
     return plugins
 
 
 def load_plugin(plugin_id: str):
-    """Загружает модуль плагина."""
+    """Загружает модуль плагина (с установкой зависимостей)."""
     plugin_dir = PLUGINS_DIR / plugin_id
     main_file  = plugin_dir / "main.py"
     if not main_file.exists():
         return None
+
+    # Устанавливаем зависимости если нужно
+    meta = _load_meta(plugin_dir)
+    _ensure_requirements(meta.get("requires", []))
+
     spec   = importlib.util.spec_from_file_location(f"plugin_{plugin_id}", main_file)
     module = importlib.util.module_from_spec(spec)
     try:
