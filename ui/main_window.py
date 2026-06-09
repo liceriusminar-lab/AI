@@ -28,6 +28,11 @@ from calendar_manager import handle_calendar_command, get_today, ReminderDaemon
 from ui.calendar_widget import CalendarWidget
 from ui.sysmon_widget import SysMonWidget
 from encryption import get_encryption_status
+try:
+    from voice_daemon import start_voice_daemon, stop_voice_daemon, get_daemon
+    _VOICE_AVAILABLE = True
+except ImportError:
+    _VOICE_AVAILABLE = False
 from stt import STTWorker, check_microphone
 import markdown
 
@@ -128,6 +133,17 @@ class MainWindow(QMainWindow):
         self.profile_btn.clicked.connect(self._open_profiles)
 
         # Файлы — виден в сайдбаре
+
+        # Голосовая активация
+        self._voice_btn = QPushButton("🎙 Голос: слушаю")
+        self._voice_btn.setObjectName("delete_btn")
+        self._voice_btn.setCheckable(True)
+        self._voice_btn.setChecked(True)
+        self._voice_btn.clicked.connect(self._toggle_voice)
+        if not _VOICE_AVAILABLE:
+            self._voice_btn.setText("🎙 Голос: не установлен")
+            self._voice_btn.setEnabled(False)
+
         files_btn = QPushButton("📁 Файлы"); files_btn.setObjectName("delete_btn")
         files_btn.clicked.connect(self._toggle_files)
 
@@ -137,7 +153,7 @@ class MainWindow(QMainWindow):
 
         for w in [title, self.server_indicator, subtitle, new_btn, self.profile_btn,
                   self.search_box, self.chat_list, self.model_selector,
-                  files_btn, more_btn, self._sysmon]:
+                  self._voice_btn, files_btn, more_btn, self._sysmon]:
             layout.addWidget(w)
         layout.addSpacing(12)
         layout.addSpacing(12)
@@ -235,6 +251,22 @@ class MainWindow(QMainWindow):
         self._md_toggle.clicked.connect(self._toggle_md_preview)
         outer_layout.insertWidget(1, self._md_toggle)
         return panel
+
+    def _toggle_voice(self, checked):
+        try:
+            from voice_daemon import get_daemon
+            daemon = get_daemon()
+            if checked:
+                daemon.start()
+                self._voice_btn.setText("🎙 Голос: слушаю")
+                self.status_label.setText("✦ Голосовая активация включена")
+            else:
+                daemon.stop()
+                self._voice_btn.setText("🎙 Голос: пауза")
+                self.status_label.setText("🎙 Голосовая активация на паузе")
+        except Exception as e:
+            self.status_label.setText(f"🎙 Ошибка: {e}")
+        QTimer.singleShot(3000, lambda: self.status_label.setText("Готово ✦"))
 
     def _toggle_stt(self, checked):
         if not checked:

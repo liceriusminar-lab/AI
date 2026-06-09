@@ -43,6 +43,27 @@ def start_backend():
         )
         print("Inference сервер запускается...")
 
+
+def start_voice_process():
+    import subprocess, sys, os
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice_daemon.py")
+    if not os.path.exists(script):
+        return
+    try:
+        r = subprocess.run(["pgrep", "-f", "voice_daemon.py"], capture_output=True)
+        if r.returncode == 0:
+            print("Голосовой демон уже запущен")
+            return
+    except Exception:
+        pass
+    proc = subprocess.Popen(
+        [sys.executable, script, "--run"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    print(f"Голосовой демон запущен (pid={proc.pid})")
+
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
@@ -59,6 +80,13 @@ def main():
     app.setPalette(pal)
 
     start_backend()
+    # Выбор микрофона
+    from mic_selector import show_mic_selector
+    chosen_mic = show_mic_selector(app)
+    if chosen_mic is not None:
+        os.environ["SYLVIETTE_MIC_INDEX"] = str(chosen_mic)
+    start_voice_process()
+
     win = MainWindow()
     win.show()
     # Перезагружаем модели через 10 секунд
